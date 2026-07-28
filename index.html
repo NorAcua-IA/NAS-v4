@@ -4433,7 +4433,7 @@ function App() {
           }
           lastSavedProyRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia proyectos:', e); }
-      }, 1000);
+      }, 2200);
     }
   }, [proyectos, loading]);
 
@@ -5016,11 +5016,16 @@ function App() {
   const addProy = () => {
     if (!fPr.nombre || !fPr.zona) return;
     const newId = uuid();
+    // v4.0 fix: resolver SITE y Responsable (elegidos por nombre) a sus
+    // identificadores reales antes de guardar — ver mismo arreglo en savEP.
+    const estId = fPr.estacion ? (fPr.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50)) : null;
+    const resp = resps.find(r => (typeof r === "object" ? r.nombre : r) === fPr.responsableBP);
+    const respId = (resp && typeof resp === "object") ? resp.id : null;
     setProyectos(p => [...p, {
       ...fPr,
       id: newId,
-      estacionId: null,
-      responsableBPId: null,
+      estacionId: estId,
+      responsableBPId: respId,
       creadoEn: new Date().toISOString()
     }]);
     if (fPr.estacion && !estaciones.includes(fPr.estacion)) setEstaciones(e => [...e, fPr.estacion].sort());
@@ -5028,7 +5033,14 @@ function App() {
     setMProy(false);
   };
   const savEP = () => {
-    setProyectos(p => p.map(x => x.id === mEProy.id ? mEProy : x));
+    // v4.0 fix: el formulario elige SITE y Responsable por NOMBRE, pero lo que
+    // se guarda en la base de datos son sus identificadores — sin esto, la
+    // asignación se perdía siempre, aunque se viera bien en pantalla.
+    const estId = mEProy.estacion ? (mEProy.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50)) : null;
+    const resp = resps.find(r => (typeof r === "object" ? r.nombre : r) === mEProy.responsableBP);
+    const respId = (resp && typeof resp === "object") ? resp.id : (mEProy.responsableBPId || null);
+    const mEProyConIds = { ...mEProy, estacionId: estId || mEProy.estacionId, responsableBPId: respId };
+    setProyectos(p => p.map(x => x.id === mEProyConIds.id ? mEProyConIds : x));
     if (mEProy.estacion && !estaciones.includes(mEProy.estacion)) setEstaciones(e => [...e, mEProy.estacion].sort());
     setMEProy(null);
   };
