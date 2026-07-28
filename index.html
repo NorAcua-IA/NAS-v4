@@ -273,6 +273,80 @@ function _rowToFact(row) {
   };
 }
 
+function _factHeaderToRow(f) {
+  return {
+    id: f.id, numero: f.numero || '', tipo: f.tipo || 'Factura',
+    estado: f.estado || 'Borrador', fecha: f.fecha,
+    fecha_vto: f.fechaVto || null, cliente_id: f.clienteId || null,
+    serie_id: f.serieId || null,
+    observaciones: f.concepto || '', po_ref: f.po || null,
+    metodo_pago: f.metodoPago || 'Transferencia bancaria',
+    creado_en: f.creadoEn || new Date().toISOString(),
+    base_imponible: f.baseImponible ?? null,
+    iva_pct: f.ivaPct || 21,
+    iva_amt: f.totalIva ?? null
+  };
+}
+// v4.0: claves de comparación para el guardado por diferencias de facturas.
+function _factDiffKeys(f) {
+  const headerKey = JSON.stringify(_factHeaderToRow(f));
+  const lineasKey = JSON.stringify((f.lineas || []).map(l => ({
+    c: l.concepto || l.descripcion || '', u: l.uds, p: l.precio,
+    d: l.descuento || 0, iv: l.iva || 21, ec: !!l.esCabecera
+  })));
+  return { headerKey, lineasKey };
+}
+
+function _clienteToRow(c) {
+  const pobl = (c.poblacion || '').trim();
+  const m = pobl.match(/^(\d{4,5})\s*-?\s*(.*)$/);
+  return {
+    id: c.id, nombre: c.nombre || '', nif: c.nif || null,
+    codigo: c.codigoRef != null ? c.codigoRef : '',
+    direccion_linea1: c.direccion || null,
+    cp: m ? m[1] : null,
+    ciudad: m ? (m[2] || null) : (pobl || null),
+    iban: c.iban || null,
+    email_facturacion: c.emailFact || null,
+    dias_vto_defecto: c.diasVto != null ? c.diasVto : 30,
+    metodo_pago_defecto: c.metodoPago || null,
+    serie_defecto: c.serieDefecto || 'DR',
+    iva_defecto: c.ivaDefecto != null ? c.ivaDefecto : 21,
+    concepto_cliente: c.conceptoCliente || null,
+    forma_pago: c.formaPago || null
+  };
+}
+// v4.0: clave de comparación para el guardado por diferencias de clientes.
+function _clienteDiffKey(c) {
+  return JSON.stringify(_clienteToRow(c));
+}
+
+function _proyectoToRow(p) {
+  return {
+    id: p.id, nombre: p.nombre || '', po: p.po || null,
+    zona: p.zona || null,
+    responsable_bp_id: p.responsableBPId || null,
+    estacion_id: p.estacionId || null,
+    cliente_id: p.clienteId || null,
+    activo: p.activo !== false, creado_en: p.creadoEn || new Date().toISOString()
+  };
+}
+function _proyectoDiffKey(p) {
+  return JSON.stringify(_proyectoToRow(p));
+}
+
+function _estacionToRow(nombre, estMeta) {
+  return {
+    id: (nombre||'').toLowerCase().replace(/[^a-z0-9]/gi,'_').slice(0,50),
+    nombre,
+    zona: estMeta[nombre]?.zona || null,
+    cliente_id: estMeta[nombre]?.clienteId || null
+  };
+}
+function _estacionDiffKey(nombre, estMeta) {
+  return JSON.stringify(_estacionToRow(nombre, estMeta));
+}
+
 // Convierte fila v3 de na_ofertas al formato interno React
 function _rowToOferta(row) {
   // na_ofertas: metadatos puede ser null en datos migrados
@@ -3743,6 +3817,11 @@ function App() {
   // desde ESTA sesión, en vez de reescribir siempre la lista entera de memoria.
   const lastSavedRegRef = useRef(new Map());
   const lastSavedOfertaRef = useRef(new Map());
+  const lastSavedFactRef = useRef(new Map());
+  const lastSavedCliRef = useRef(new Map());
+  const lastSavedProyRef = useRef(new Map());
+  const lastSavedEstRef = useRef(new Map());
+  const lastSavedHsseRef = useRef(new Map());
   const [hashesReady, setHashesReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [usrs, setUsrs] = useState(Object.fromEntries(Object.entries(DEF_USERS).map(([k, v]) => [k, {
@@ -4156,6 +4235,11 @@ function App() {
           formaPago: r.forma_pago || ''
         }));
         setClientes(clientesV3.length ? clientesV3 : CLIENTES_DEF);
+        {
+          const seedCli = new Map();
+          (clientesV3.length ? clientesV3 : CLIENTES_DEF).forEach(c => seedCli.set(c.id, _clienteDiffKey(c)));
+          lastSavedCliRef.current = seedCli;
+        }
 
         // 8. Series
         const seriesV3 = (serieRows || []).map(r => ({
@@ -4196,6 +4280,15 @@ function App() {
             const totales = calcFactTotales(conLineas);
             return { ...conLineas, ...totales };
           }));
+          {
+            const seedFact = new Map();
+            factsBase.forEach(f => {
+              const conLineas = { ...f, lineas: linFactMap[f.id] || [] };
+              const totales = calcFactTotales(conLineas);
+              seedFact.set(f.id, _factDiffKeys({ ...conLineas, ...totales }));
+            });
+            lastSavedFactRef.current = seedFact;
+          }
         } else {
           setFacturas([]);
         }
@@ -4212,6 +4305,11 @@ function App() {
           if (r.nombre) estMetaV3[r.nombre] = { zona: r.zona || '', clienteId: r.cliente_id || null };
         });
         setEstMeta(estMetaV3);
+        {
+          const seedEst = new Map();
+          estV3.forEach(n => seedEst.set(n, _estacionDiffKey(n, estMetaV3)));
+          lastSavedEstRef.current = seedEst;
+        }
 
         // 10b. Resolver nombres de estación y responsable en proyectos
         const respNomMap = {};
@@ -4223,6 +4321,11 @@ function App() {
           responsableBP: respNomMap[p.responsableBPId] || p.responsableBP || ''
         }));
         setProyectos(proyectosResolved);
+        {
+          const seedProy = new Map();
+          proyectosResolved.forEach(p => seedProy.set(p.id, _proyectoDiffKey(p)));
+          lastSavedProyRef.current = seedProy;
+        }
 
         // 11. Ofertas
         {
@@ -4242,6 +4345,12 @@ function App() {
 
         // 13. HSSE supervisiones
         setHsseSups((hssRows || []).map(_rowToHsse));
+        {
+          const hsseV3 = (hssRows || []).map(_rowToHsse);
+          const seedHsse = new Map();
+          hsseV3.forEach(s => seedHsse.set(s.id, JSON.stringify(_hsseToRow(s))));
+          lastSavedHsseRef.current = seedHsse;
+        }
 
         // 14. Preciarios + conceptos / capítulos (sin cifrado en v3)
         setPreciarios(precRows || []);
@@ -4310,16 +4419,19 @@ function App() {
       clearTimeout(window._bkProy);
       window._bkProy = setTimeout(async () => {
         try {
-          const rows = proyectos.map(p => ({
-            id: p.id, nombre: p.nombre || '', po: p.po || null,
-            zona: p.zona || null,
-            responsable_bp_id: p.responsableBPId || null,
-            estacion_id: p.estacionId || null,
-            cliente_id: p.clienteId || null,
-            activo: p.activo !== false, creado_en: p.creadoEn || new Date().toISOString()
-          }));
-          await _sb('/rest/v1/na_proyectos', { method: 'POST', body: JSON.stringify(rows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-        } catch(e) { console.error('[NorAcuaV3] persistencia proyectos:', e); }
+          const prevMap = lastSavedProyRef.current || new Map();
+          const nextMap = new Map();
+          const changedRows = [];
+          proyectos.forEach(p => {
+            const key = _proyectoDiffKey(p);
+            nextMap.set(p.id, key);
+            if (prevMap.get(p.id) !== key) changedRows.push(_proyectoToRow(p));
+          });
+          if (changedRows.length) {
+            await _sb('/rest/v1/na_proyectos', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          }
+          lastSavedProyRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia proyectos:', e); }
       }, 1000);
     }
   }, [proyectos, loading]);
@@ -4441,27 +4553,19 @@ function App() {
       clearTimeout(window._bkCli);
       window._bkCli = setTimeout(async () => {
         try {
-          const rows = clientes.map(c => {
-            const pobl = (c.poblacion || '').trim();
-            const m = pobl.match(/^(\d{4,5})\s*-?\s*(.*)$/);
-            return {
-              id: c.id, nombre: c.nombre || '', nif: c.nif || null,
-              codigo: c.codigoRef != null ? c.codigoRef : '',
-              direccion_linea1: c.direccion || null,
-              cp: m ? m[1] : null,
-              ciudad: m ? (m[2] || null) : (pobl || null),
-              iban: c.iban || null,
-              email_facturacion: c.emailFact || null,
-              dias_vto_defecto: c.diasVto != null ? c.diasVto : 30,
-              metodo_pago_defecto: c.metodoPago || null,
-              serie_defecto: c.serieDefecto || 'DR',
-              iva_defecto: c.ivaDefecto != null ? c.ivaDefecto : 21,
-              concepto_cliente: c.conceptoCliente || null,
-              forma_pago: c.formaPago || null
-            };
+          const prevMap = lastSavedCliRef.current || new Map();
+          const nextMap = new Map();
+          const changedRows = [];
+          clientes.forEach(c => {
+            const key = _clienteDiffKey(c);
+            nextMap.set(c.id, key);
+            if (prevMap.get(c.id) !== key) changedRows.push(_clienteToRow(c));
           });
-          await _sb('/rest/v1/na_clientes', { method: 'POST', body: JSON.stringify(rows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-        } catch(e) { console.error('[NorAcuaV3] persistencia clientes:', e); }
+          if (changedRows.length) {
+            await _sb('/rest/v1/na_clientes', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          }
+          lastSavedCliRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia clientes:', e); }
       }, 1000);
     }
   }, [clientes, loading]);
@@ -4486,36 +4590,45 @@ function App() {
       clearTimeout(window._bkFact);
       window._bkFact = setTimeout(async () => {
         try {
-          const factRows = facturas.map(f => ({
-            id: f.id, numero: f.numero || '', tipo: f.tipo || 'Factura',
-            estado: f.estado || 'Borrador', fecha: f.fecha,
-            fecha_vto: f.fechaVto || null, cliente_id: f.clienteId || null,
-            serie_id: f.serieId || null,
-            observaciones: f.concepto || '', po_ref: f.po || null,
-            metodo_pago: f.metodoPago || 'Transferencia bancaria',
-            creado_en: f.creadoEn || new Date().toISOString(),
-            base_imponible: f.baseImponible ?? null,
-            iva_pct: f.ivaPct || 21,
-            iva_amt: f.totalIva ?? null
-          }));
-          for (let i = 0; i < factRows.length; i += 50) {
-            await _sb('/rest/v1/na_facturas', { method: 'POST', body: JSON.stringify(factRows.slice(i, i+50)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-          }
-          const linRows = [];
+          const prevMap = lastSavedFactRef.current || new Map();
+          const nextMap = new Map();
+          const changedHeaders = [];
+          const changedLineasFacts = [];
           facturas.forEach(f => {
-            if (!Array.isArray(f.lineas)) return;
-            f.lineas.forEach((l, i) => linRows.push({
-              id: l.id || uuid(), factura_id: f.id,
-              concepto: l.concepto || l.descripcion || '',
-              uds: parseFloat(l.uds) || 1, precio: parseFloat(l.precio) || 0,
-              descuento_pct: parseFloat(l.descuento) || 0, iva_pct: parseFloat(l.iva) || 21,
-              es_cabecera: !!l.esCabecera, orden: i
-            }));
+            const keys = _factDiffKeys(f);
+            nextMap.set(f.id, keys);
+            const prev = prevMap.get(f.id);
+            if (!prev || prev.headerKey !== keys.headerKey) changedHeaders.push(_factHeaderToRow(f));
+            if (!prev || prev.lineasKey !== keys.lineasKey) changedLineasFacts.push(f);
           });
-          for (let i = 0; i < linRows.length; i += 200) {
-            await _sb('/rest/v1/na_lineas_factura', { method: 'POST', body: JSON.stringify(linRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          if (changedHeaders.length) {
+            for (let i = 0; i < changedHeaders.length; i += 50) {
+              await _sb('/rest/v1/na_facturas', { method: 'POST', body: JSON.stringify(changedHeaders.slice(i, i+50)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            }
           }
-        } catch(e) { console.error('[NorAcuaV3] persistencia facturas:', e); }
+          if (changedLineasFacts.length) {
+            const idsF = changedLineasFacts.map(f => f.id);
+            for (let i = 0; i < idsF.length; i += 50) {
+              await _sb('/rest/v1/na_lineas_factura?factura_id=in.(' + idsF.slice(i, i+50).join(',') + ')', { method: 'DELETE' });
+            }
+            const linRows = [];
+            changedLineasFacts.forEach(f => {
+              (Array.isArray(f.lineas) ? f.lineas : []).forEach((l, i) => linRows.push({
+                id: l.id || uuid(), factura_id: f.id,
+                concepto: l.concepto || l.descripcion || '',
+                uds: parseFloat(l.uds) || 1, precio: parseFloat(l.precio) || 0,
+                descuento_pct: parseFloat(l.descuento) || 0, iva_pct: parseFloat(l.iva) || 21,
+                es_cabecera: !!l.esCabecera, orden: i
+              }));
+            });
+            if (linRows.length) {
+              for (let i = 0; i < linRows.length; i += 200) {
+                await _sb('/rest/v1/na_lineas_factura', { method: 'POST', body: JSON.stringify(linRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+              }
+            }
+          }
+          lastSavedFactRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia facturas:', e); }
       }, 1000);
     }
   }, [facturas, loading]);
@@ -4525,14 +4638,19 @@ function App() {
       clearTimeout(window._bkEst);
       window._bkEst = setTimeout(async () => {
         try {
-          const rows = estaciones.map(nombre => ({
-            id: (nombre||'').toLowerCase().replace(/[^a-z0-9]/gi,'_').slice(0,50),
-            nombre,
-            zona: estMeta[nombre]?.zona || null,
-            cliente_id: estMeta[nombre]?.clienteId || null
-          }));
-          await _sb('/rest/v1/na_estaciones', { method: 'POST', body: JSON.stringify(rows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-        } catch(e) { console.error('[NorAcuaV3] persistencia estaciones:', e); }
+          const prevMap = lastSavedEstRef.current || new Map();
+          const nextMap = new Map();
+          const changedRows = [];
+          estaciones.forEach(nombre => {
+            const key = _estacionDiffKey(nombre, estMeta);
+            nextMap.set(nombre, key);
+            if (prevMap.get(nombre) !== key) changedRows.push(_estacionToRow(nombre, estMeta));
+          });
+          if (changedRows.length) {
+            await _sb('/rest/v1/na_estaciones', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          }
+          lastSavedEstRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia estaciones:', e); }
       }, 1500);
     }
   }, [estaciones, estMeta, loading]);
@@ -4577,11 +4695,22 @@ function App() {
       clearTimeout(window._bkHsse);
       window._bkHsse = setTimeout(async () => {
         try {
-          const rows = hsseSups.map(_hsseToRow);
-          for (let i = 0; i < rows.length; i += 100) {
-            await _sb('/rest/v1/na_hsse_supervisiones', { method: 'POST', body: JSON.stringify(rows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          const prevMap = lastSavedHsseRef.current || new Map();
+          const nextMap = new Map();
+          const changedRows = [];
+          hsseSups.forEach(s => {
+            const row = _hsseToRow(s);
+            const key = JSON.stringify(row);
+            nextMap.set(s.id, key);
+            if (prevMap.get(s.id) !== key) changedRows.push(row);
+          });
+          if (changedRows.length) {
+            for (let i = 0; i < changedRows.length; i += 100) {
+              await _sb('/rest/v1/na_hsse_supervisiones', { method: 'POST', body: JSON.stringify(changedRows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            }
           }
-        } catch(e) { console.error('[NorAcuaV3] persistencia hsse:', e); }
+          lastSavedHsseRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia hsse:', e); }
       }, 1000);
     }
   }, [hsseSups, loading]);
