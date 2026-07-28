@@ -4299,8 +4299,13 @@ function App() {
         // 10. Estaciones — guardar como strings de nombre (para compatibilidad UI)
         // y también mapa id→nombre para resolver estacion_id en proyectos
         const estNomMap = {};
-        (estRows || []).forEach(r => { estNomMap[r.id] = r.nombre || r.id; });
+        const estIdMap = {}; // v4.0 fix: nombre→id REAL — las estaciones migradas
+        // desde v2.7 tienen un id aleatorio (uuid), no el id calculado a partir del
+        // nombre, así que la asignación de SITE a un proyecto necesita este mapa
+        // para no inventarse un id que no existe en la base de datos.
+        (estRows || []).forEach(r => { estNomMap[r.id] = r.nombre || r.id; if (r.nombre) estIdMap[r.nombre] = r.id; });
         window._naEstNomMap = estNomMap;
+        window._naEstIdMap = estIdMap;
         const estV3 = (estRows || []).map(r => r.nombre || r.id);
         setEstaciones(estV3);
         const estMetaV3 = {};
@@ -5044,7 +5049,9 @@ function App() {
     const newId = uuid();
     // v4.0 fix: resolver SITE y Responsable (elegidos por nombre) a sus
     // identificadores reales antes de guardar — ver mismo arreglo en savEP.
-    const estId = fPr.estacion ? (fPr.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50)) : null;
+    const estId = fPr.estacion
+      ? (window._naEstIdMap?.[fPr.estacion] || fPr.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50))
+      : null;
     const resp = resps.find(r => (typeof r === "object" ? r.nombre : r) === fPr.responsableBP);
     const respId = (resp && typeof resp === "object") ? resp.id : null;
     setProyectos(p => [...p, {
@@ -5062,7 +5069,9 @@ function App() {
     // v4.0 fix: el formulario elige SITE y Responsable por NOMBRE, pero lo que
     // se guarda en la base de datos son sus identificadores — sin esto, la
     // asignación se perdía siempre, aunque se viera bien en pantalla.
-    const estId = mEProy.estacion ? (mEProy.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50)) : null;
+    const estId = mEProy.estacion
+      ? (window._naEstIdMap?.[mEProy.estacion] || mEProy.estacion.toLowerCase().replace(/[^a-z0-9]/gi, '_').slice(0, 50))
+      : null;
     const resp = resps.find(r => (typeof r === "object" ? r.nombre : r) === mEProy.responsableBP);
     const respId = (resp && typeof resp === "object") ? resp.id : (mEProy.responsableBPId || null);
     const mEProyConIds = { ...mEProy, estacionId: estId || mEProy.estacionId, responsableBPId: respId };
@@ -6427,7 +6436,7 @@ function App() {
         setUser(null);
         keyRef.current = null;
         setConcs([]);
-      }, 2000);
+      }, 2800);
     },
     disabled: loggingOut,
     title: loggingOut ? "Guardando cambios pendientes…" : "Cerrar sesión",
