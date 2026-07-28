@@ -5038,6 +5038,7 @@ function App() {
   };
   const addProy = () => {
     if (!fPr.nombre || !fPr.zona) return;
+    if (!fPr.clienteId) { alert("Selecciona un cliente antes de guardar el proyecto."); return; }
     const newId = uuid();
     // v4.0 fix: resolver SITE y Responsable (elegidos por nombre) a sus
     // identificadores reales antes de guardar — ver mismo arreglo en savEP.
