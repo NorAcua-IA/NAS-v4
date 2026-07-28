@@ -3599,7 +3599,7 @@ function genPDFOferta({
     c
   }) => {
     const sub = calcOfertaLinea(l);
-    return `<tr><td>${c?.id ? `${c.id} - ` : ""}${c?.nombre || l.conceptoId}${l.comentario ? `<div style="font-size:10px;color:#666;margin-top:2px">${l.comentario}</div>` : ""}</td><td style="text-align:center">${l.cantidad || 1}</td><td style="text-align:right">${fmtN(l.precioUnit)}${Number(l.descuento) > 0 ? ` (-${l.descuento}%)` : ""}</td><td style="text-align:right;font-weight:700">${fmtN(sub)}</td></tr>`;
+    return `<tr><td>${c?.nombre || l.conceptoId}${l.comentario ? `<div style="font-size:10px;color:#666;margin-top:2px">${l.comentario}</div>` : ""}</td><td style="text-align:center">${l.cantidad || 1}</td><td style="text-align:right">${fmtN(l.precioUnit)}${Number(l.descuento) > 0 ? ` (-${l.descuento}%)` : ""}</td><td style="text-align:right;font-weight:700">${fmtN(sub)}</td></tr>`;
   }).join("")}`).join("");
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 @page{size:A4;margin:14mm 14mm 10mm 14mm}
