@@ -4421,15 +4421,19 @@ function App() {
       window._bkProy = setTimeout(async () => {
         try {
           const prevMap = lastSavedProyRef.current || new Map();
-          const nextMap = new Map();
+          const nextMap = new Map(prevMap);
           const changedRows = [];
+          const changedIds = [];
           proyectos.forEach(p => {
             const key = _proyectoDiffKey(p);
-            nextMap.set(p.id, key);
-            if (prevMap.get(p.id) !== key) changedRows.push(_proyectoToRow(p));
+            if (prevMap.get(p.id) !== key) { changedRows.push(_proyectoToRow(p)); changedIds.push({ id: p.id, key }); }
           });
-          if (changedRows.length) {
-            await _sb('/rest/v1/na_proyectos', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          for (let i = 0; i < changedRows.length; i += 100) {
+            const chunk = changedRows.slice(i, i + 100);
+            const chunkIds = changedIds.slice(i, i + 100);
+            const res = await _sb('/rest/v1/na_proyectos', { method: 'POST', body: JSON.stringify(chunk), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) chunkIds.forEach(c => nextMap.set(c.id, c.key));
+            else console.error('[NorAcuaV4] fallo al guardar proyectos, se reintentará:', chunk.map(r => r.id));
           }
           lastSavedProyRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia proyectos:', e); }
@@ -4443,41 +4447,42 @@ function App() {
       window._bkRegs = setTimeout(async () => {
         try {
           const prevMap = lastSavedRegRef.current || new Map();
-          const nextMap = new Map();
-          const changedHeaders = [];
-          const changedLineasRegs = [];
+          const nextMap = new Map(prevMap);
+          const changedHeaderEntries = [];
+          const changedLineasEntries = [];
 
           registros.forEach(reg => {
             const keys = _regDiffKeys(reg, window._naTecnicoIdMap);
-            nextMap.set(reg.id, keys);
             const prev = prevMap.get(reg.id);
             if (!prev || prev.headerKey !== keys.headerKey) {
-              changedHeaders.push(_regToRow(reg, window._naTecnicoIdMap));
+              changedHeaderEntries.push({ id: reg.id, row: _regToRow(reg, window._naTecnicoIdMap), key: keys.headerKey });
             }
             if (reg.esGrupo && (!prev || prev.lineasKey !== keys.lineasKey)) {
-              changedLineasRegs.push(reg);
+              changedLineasEntries.push({ id: reg.id, reg, key: keys.lineasKey });
             }
           });
 
-          if (changedHeaders.length) {
-            for (let i = 0; i < changedHeaders.length; i += 100) {
-              await _sb('/rest/v1/na_registros', { method: 'POST', body: JSON.stringify(changedHeaders.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-            }
+          for (let i = 0; i < changedHeaderEntries.length; i += 100) {
+            const chunk = changedHeaderEntries.slice(i, i + 100);
+            const res = await _sb('/rest/v1/na_registros', { method: 'POST', body: JSON.stringify(chunk.map(c => c.row)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) {
+              chunk.forEach(c => nextMap.set(c.id, { ...(nextMap.get(c.id) || { headerKey: null, lineasKey: null }), headerKey: c.key }));
+            } else console.error('[NorAcuaV4] fallo al guardar actividades, se reintentará:', chunk.map(c => c.id));
           }
 
           // v3.1 fix crítico: sincronizar también las líneas de los registros de grupo
           // que hayan cambiado — antes se reescribían las de TODOS los grupos en cada ciclo.
-          if (changedLineasRegs.length) {
-            const idsGrupo = changedLineasRegs.map(r => r.id);
-            for (let i = 0; i < idsGrupo.length; i += 50) {
-              await _sb('/rest/v1/na_lineas_registro?registro_id=in.(' + idsGrupo.slice(i, i+50).join(',') + ')', { method: 'DELETE' });
-            }
+          for (let i = 0; i < changedLineasEntries.length; i += 50) {
+            const chunk = changedLineasEntries.slice(i, i + 50);
+            const idsGrupo = chunk.map(c => c.id);
+            const delRes = await _sb('/rest/v1/na_lineas_registro?registro_id=in.(' + idsGrupo.join(',') + ')', { method: 'DELETE' });
+            if (delRes === null) { console.error('[NorAcuaV4] fallo al borrar líneas previas, se reintentará:', idsGrupo); continue; }
             const lineaRows = [];
-            changedLineasRegs.forEach(reg => {
-              (reg.lineasGrupo || []).forEach((l, i) => {
+            chunk.forEach(c => {
+              (c.reg.lineasGrupo || []).forEach((l, i2) => {
                 lineaRows.push({
-                  id: l.id || (reg.id + '_l' + i),
-                  registro_id: reg.id,
+                  id: l.id || (c.id + '_l' + i2),
+                  registro_id: c.id,
                   concepto_id: l.conceptoId || null,
                   cantidad: parseFloat(l.cantidad) || 1,
                   cantidad_certif: l.cantCertif != null ? l.cantCertif : null,
@@ -4486,15 +4491,19 @@ function App() {
                   observaciones: l.observaciones || l.comentario || '',
                   certif_enviada: !!l.certifEnviada,
                   certif_aprobada: !!l.certifAprobada,
-                  orden: i
+                  orden: i2
                 });
               });
             });
+            let insOk = true;
             if (lineaRows.length) {
-              for (let i = 0; i < lineaRows.length; i += 200) {
-                await _sb('/rest/v1/na_lineas_registro', { method: 'POST', body: JSON.stringify(lineaRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+              for (let j = 0; j < lineaRows.length; j += 200) {
+                const insRes = await _sb('/rest/v1/na_lineas_registro', { method: 'POST', body: JSON.stringify(lineaRows.slice(j, j + 200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+                if (insRes === null) insOk = false;
               }
             }
+            if (insOk) chunk.forEach(c => nextMap.set(c.id, { ...(nextMap.get(c.id) || { headerKey: null, lineasKey: null }), lineasKey: c.key }));
+            else console.error('[NorAcuaV4] fallo al guardar líneas de actividades, se reintentará:', idsGrupo);
           }
 
           lastSavedRegRef.current = nextMap;
@@ -4555,15 +4564,19 @@ function App() {
       window._bkCli = setTimeout(async () => {
         try {
           const prevMap = lastSavedCliRef.current || new Map();
-          const nextMap = new Map();
+          const nextMap = new Map(prevMap);
           const changedRows = [];
+          const changedIds = [];
           clientes.forEach(c => {
             const key = _clienteDiffKey(c);
-            nextMap.set(c.id, key);
-            if (prevMap.get(c.id) !== key) changedRows.push(_clienteToRow(c));
+            if (prevMap.get(c.id) !== key) { changedRows.push(_clienteToRow(c)); changedIds.push({ id: c.id, key }); }
           });
-          if (changedRows.length) {
-            await _sb('/rest/v1/na_clientes', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          for (let i = 0; i < changedRows.length; i += 100) {
+            const chunk = changedRows.slice(i, i + 100);
+            const chunkIds = changedIds.slice(i, i + 100);
+            const res = await _sb('/rest/v1/na_clientes', { method: 'POST', body: JSON.stringify(chunk), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) chunkIds.forEach(c => nextMap.set(c.id, c.key));
+            else console.error('[NorAcuaV4] fallo al guardar clientes, se reintentará:', chunk.map(r => r.id));
           }
           lastSavedCliRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia clientes:', e); }
@@ -4592,41 +4605,45 @@ function App() {
       window._bkFact = setTimeout(async () => {
         try {
           const prevMap = lastSavedFactRef.current || new Map();
-          const nextMap = new Map();
-          const changedHeaders = [];
-          const changedLineasFacts = [];
+          const nextMap = new Map(prevMap);
+          const changedHeaderEntries = [];
+          const changedLineasEntries = [];
           facturas.forEach(f => {
             const keys = _factDiffKeys(f);
-            nextMap.set(f.id, keys);
             const prev = prevMap.get(f.id);
-            if (!prev || prev.headerKey !== keys.headerKey) changedHeaders.push(_factHeaderToRow(f));
-            if (!prev || prev.lineasKey !== keys.lineasKey) changedLineasFacts.push(f);
+            if (!prev || prev.headerKey !== keys.headerKey) changedHeaderEntries.push({ id: f.id, row: _factHeaderToRow(f), key: keys.headerKey });
+            if (!prev || prev.lineasKey !== keys.lineasKey) changedLineasEntries.push({ id: f.id, f, key: keys.lineasKey });
           });
-          if (changedHeaders.length) {
-            for (let i = 0; i < changedHeaders.length; i += 50) {
-              await _sb('/rest/v1/na_facturas', { method: 'POST', body: JSON.stringify(changedHeaders.slice(i, i+50)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-            }
+          for (let i = 0; i < changedHeaderEntries.length; i += 50) {
+            const chunk = changedHeaderEntries.slice(i, i + 50);
+            const res = await _sb('/rest/v1/na_facturas', { method: 'POST', body: JSON.stringify(chunk.map(c => c.row)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) chunk.forEach(c => nextMap.set(c.id, { ...(nextMap.get(c.id) || { headerKey: null, lineasKey: null }), headerKey: c.key }));
+            else console.error('[NorAcuaV4] fallo al guardar facturas, se reintentará:', chunk.map(c => c.id));
           }
-          if (changedLineasFacts.length) {
-            const idsF = changedLineasFacts.map(f => f.id);
-            for (let i = 0; i < idsF.length; i += 50) {
-              await _sb('/rest/v1/na_lineas_factura?factura_id=in.(' + idsF.slice(i, i+50).join(',') + ')', { method: 'DELETE' });
-            }
+          for (let i = 0; i < changedLineasEntries.length; i += 50) {
+            const chunk = changedLineasEntries.slice(i, i + 50);
+            const idsF = chunk.map(c => c.id);
+            const delRes = await _sb('/rest/v1/na_lineas_factura?factura_id=in.(' + idsF.join(',') + ')', { method: 'DELETE' });
+            if (delRes === null) { console.error('[NorAcuaV4] fallo al borrar líneas de factura previas, se reintentará:', idsF); continue; }
             const linRows = [];
-            changedLineasFacts.forEach(f => {
-              (Array.isArray(f.lineas) ? f.lineas : []).forEach((l, i) => linRows.push({
-                id: l.id || uuid(), factura_id: f.id,
+            chunk.forEach(c => {
+              (Array.isArray(c.f.lineas) ? c.f.lineas : []).forEach((l, i2) => linRows.push({
+                id: l.id || uuid(), factura_id: c.id,
                 concepto: l.concepto || l.descripcion || '',
                 uds: parseFloat(l.uds) || 1, precio: parseFloat(l.precio) || 0,
                 descuento_pct: parseFloat(l.descuento) || 0, iva_pct: parseFloat(l.iva) || 21,
-                es_cabecera: !!l.esCabecera, orden: i
+                es_cabecera: !!l.esCabecera, orden: i2
               }));
             });
+            let insOk = true;
             if (linRows.length) {
-              for (let i = 0; i < linRows.length; i += 200) {
-                await _sb('/rest/v1/na_lineas_factura', { method: 'POST', body: JSON.stringify(linRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+              for (let j = 0; j < linRows.length; j += 200) {
+                const insRes = await _sb('/rest/v1/na_lineas_factura', { method: 'POST', body: JSON.stringify(linRows.slice(j, j + 200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+                if (insRes === null) insOk = false;
               }
             }
+            if (insOk) chunk.forEach(c => nextMap.set(c.id, { ...(nextMap.get(c.id) || { headerKey: null, lineasKey: null }), lineasKey: c.key }));
+            else console.error('[NorAcuaV4] fallo al guardar líneas de factura, se reintentará:', idsF);
           }
           lastSavedFactRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia facturas:', e); }
@@ -4640,15 +4657,17 @@ function App() {
       window._bkEst = setTimeout(async () => {
         try {
           const prevMap = lastSavedEstRef.current || new Map();
-          const nextMap = new Map();
+          const nextMap = new Map(prevMap);
           const changedRows = [];
+          const changedNames = [];
           estaciones.forEach(nombre => {
             const key = _estacionDiffKey(nombre, estMeta);
-            nextMap.set(nombre, key);
-            if (prevMap.get(nombre) !== key) changedRows.push(_estacionToRow(nombre, estMeta));
+            if (prevMap.get(nombre) !== key) { changedRows.push(_estacionToRow(nombre, estMeta)); changedNames.push({ nombre, key }); }
           });
           if (changedRows.length) {
-            await _sb('/rest/v1/na_estaciones', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            const res = await _sb('/rest/v1/na_estaciones', { method: 'POST', body: JSON.stringify(changedRows), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) changedNames.forEach(c => nextMap.set(c.nombre, c.key));
+            else console.error('[NorAcuaV4] fallo al guardar estaciones, se reintentará:', changedNames.map(c => c.nombre));
           }
           lastSavedEstRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia estaciones:', e); }
@@ -4662,17 +4681,19 @@ function App() {
       window._bkOfer = setTimeout(async () => {
         try {
           const prevMap = lastSavedOfertaRef.current || new Map();
-          const nextMap = new Map();
+          const nextMap = new Map(prevMap);
           const changedRows = [];
+          const changedIds = [];
           ofertas.forEach(o => {
             const key = _ofertaDiffKey(o);
-            nextMap.set(o.id, key);
-            if (prevMap.get(o.id) !== key) changedRows.push(_ofertaToRow(o));
+            if (prevMap.get(o.id) !== key) { changedRows.push(_ofertaToRow(o)); changedIds.push({ id: o.id, key }); }
           });
-          if (changedRows.length) {
-            for (let i = 0; i < changedRows.length; i += 100) {
-              await _sb('/rest/v1/na_ofertas', { method: 'POST', body: JSON.stringify(changedRows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-            }
+          for (let i = 0; i < changedRows.length; i += 100) {
+            const chunk = changedRows.slice(i, i + 100);
+            const chunkIds = changedIds.slice(i, i + 100);
+            const res = await _sb('/rest/v1/na_ofertas', { method: 'POST', body: JSON.stringify(chunk), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) chunkIds.forEach(c => nextMap.set(c.id, c.key));
+            else console.error('[NorAcuaV4] fallo al guardar ofertas, se reintentará:', chunk.map(r => r.id));
           }
           lastSavedOfertaRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia ofertas:', e); }
@@ -4697,18 +4718,20 @@ function App() {
       window._bkHsse = setTimeout(async () => {
         try {
           const prevMap = lastSavedHsseRef.current || new Map();
-          const nextMap = new Map();
+          const nextMap = new Map(prevMap);
           const changedRows = [];
+          const changedIds = [];
           hsseSups.forEach(s => {
             const row = _hsseToRow(s);
             const key = JSON.stringify(row);
-            nextMap.set(s.id, key);
-            if (prevMap.get(s.id) !== key) changedRows.push(row);
+            if (prevMap.get(s.id) !== key) { changedRows.push(row); changedIds.push({ id: s.id, key }); }
           });
-          if (changedRows.length) {
-            for (let i = 0; i < changedRows.length; i += 100) {
-              await _sb('/rest/v1/na_hsse_supervisiones', { method: 'POST', body: JSON.stringify(changedRows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
-            }
+          for (let i = 0; i < changedRows.length; i += 100) {
+            const chunk = changedRows.slice(i, i + 100);
+            const chunkIds = changedIds.slice(i, i + 100);
+            const res = await _sb('/rest/v1/na_hsse_supervisiones', { method: 'POST', body: JSON.stringify(chunk), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (res !== null) chunkIds.forEach(c => nextMap.set(c.id, c.key));
+            else console.error('[NorAcuaV4] fallo al guardar HSSE, se reintentará:', chunk.map(r => r.id));
           }
           lastSavedHsseRef.current = nextMap;
         } catch(e) { console.error('[NorAcuaV4] persistencia hsse:', e); }
@@ -5624,6 +5647,7 @@ function App() {
   };
   const guardarOferta = () => {
     if (!editOferta || !editOferta.asunto) return;
+    if (!editOferta.clienteId) { alert("Selecciona un cliente antes de guardar la oferta."); return; }
     const lineas = Array.isArray(editOferta.lineas) ? editOferta.lineas : [];
     const snapshot = {
       ...editOferta,
