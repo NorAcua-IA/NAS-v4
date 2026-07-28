@@ -231,6 +231,21 @@ function _regToRow(reg, tecnicoIdMap) {
   };
 }
 
+// v4.0: claves de comparación para el guardado por diferencias — un cambio en
+// cualquier campo relevante de la cabecera o de las líneas produce una clave distinta.
+function _regDiffKeys(reg, tecnicoIdMap) {
+  const headerKey = JSON.stringify(_regToRow(reg, tecnicoIdMap));
+  const lineasKey = reg.esGrupo
+    ? JSON.stringify((reg.lineasGrupo || []).map(l => ({
+        c: l.conceptoId, ca: l.cantidad, cc: l.cantCertif ?? null,
+        p: l.precioManual ?? null, d: l.descuento || 0,
+        o: l.observaciones || l.comentario || '',
+        ce: !!l.certifEnviada, cap: !!l.certifAprobada
+      })))
+    : null;
+  return { headerKey, lineasKey };
+}
+
 // Convierte fila v3 de na_facturas al formato interno React
 function _rowToFact(row) {
   return {
@@ -3707,6 +3722,10 @@ function App() {
   window._naLastActivityRef = _lastActivityRef;
   window._naInactivityLogoutMs = INACTIVITY_LOGOUT_MS;
   const keyRef = useRef(null);
+  // v4.0: guardado por diferencias — recuerda qué se guardó por última vez de cada
+  // actividad, para que el guardado automático solo escriba lo que de verdad cambió
+  // desde ESTA sesión, en vez de reescribir siempre la lista entera de memoria.
+  const lastSavedRegRef = useRef(new Map());
   const [hashesReady, setHashesReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [usrs, setUsrs] = useState(Object.fromEntries(Object.entries(DEF_USERS).map(([k, v]) => [k, {
@@ -4054,6 +4073,11 @@ function App() {
         }
         const regsV3 = regsBase.map(r => r.esGrupo ? { ...r, lineasGrupo: lineasMap[r.id] || [] } : r);
         setRegistros(regsV3);
+        {
+          const seedMap = new Map();
+          regsV3.forEach(reg => seedMap.set(reg.id, _regDiffKeys(reg, window._naTecnicoIdMap || {})));
+          lastSavedRegRef.current = seedMap;
+        }
         // deletedRegIds/deletedHistIds ya no son necesarios en v3 (soft delete en BD)
         setDeletedRegIds(new Set());
         setDeletedHistIds(new Set());
@@ -4282,23 +4306,39 @@ function App() {
       clearTimeout(window._bkRegs);
       window._bkRegs = setTimeout(async () => {
         try {
-          const rows = registros.map(reg => _regToRow(reg, window._naTecnicoIdMap));
-          for (let i = 0; i < rows.length; i += 100) {
-            await _sb('/rest/v1/na_registros', { method: 'POST', body: JSON.stringify(rows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          const prevMap = lastSavedRegRef.current || new Map();
+          const nextMap = new Map();
+          const changedHeaders = [];
+          const changedLineasRegs = [];
+
+          registros.forEach(reg => {
+            const keys = _regDiffKeys(reg, window._naTecnicoIdMap);
+            nextMap.set(reg.id, keys);
+            const prev = prevMap.get(reg.id);
+            if (!prev || prev.headerKey !== keys.headerKey) {
+              changedHeaders.push(_regToRow(reg, window._naTecnicoIdMap));
+            }
+            if (reg.esGrupo && (!prev || prev.lineasKey !== keys.lineasKey)) {
+              changedLineasRegs.push(reg);
+            }
+          });
+
+          if (changedHeaders.length) {
+            for (let i = 0; i < changedHeaders.length; i += 100) {
+              await _sb('/rest/v1/na_registros', { method: 'POST', body: JSON.stringify(changedHeaders.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            }
           }
+
           // v3.1 fix crítico: sincronizar también las líneas de los registros de grupo
-          // (na_lineas_registro). Antes solo se guardaba la cabecera del registro —
-          // cualquier item añadido/editado dentro de una actividad de grupo se perdía
-          // al recargar, porque nunca llegaba a escribirse en la BD.
-          const gruposConLineas = registros.filter(r => r.esGrupo && Array.isArray(r.lineasGrupo) && r.lineasGrupo.length > 0);
-          if (gruposConLineas.length) {
-            const idsGrupo = gruposConLineas.map(r => r.id);
+          // que hayan cambiado — antes se reescribían las de TODOS los grupos en cada ciclo.
+          if (changedLineasRegs.length) {
+            const idsGrupo = changedLineasRegs.map(r => r.id);
             for (let i = 0; i < idsGrupo.length; i += 50) {
               await _sb('/rest/v1/na_lineas_registro?registro_id=in.(' + idsGrupo.slice(i, i+50).join(',') + ')', { method: 'DELETE' });
             }
             const lineaRows = [];
-            gruposConLineas.forEach(reg => {
-              reg.lineasGrupo.forEach((l, i) => {
+            changedLineasRegs.forEach(reg => {
+              (reg.lineasGrupo || []).forEach((l, i) => {
                 lineaRows.push({
                   id: l.id || (reg.id + '_l' + i),
                   registro_id: reg.id,
@@ -4314,11 +4354,15 @@ function App() {
                 });
               });
             });
-            for (let i = 0; i < lineaRows.length; i += 200) {
-              await _sb('/rest/v1/na_lineas_registro', { method: 'POST', body: JSON.stringify(lineaRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            if (lineaRows.length) {
+              for (let i = 0; i < lineaRows.length; i += 200) {
+                await _sb('/rest/v1/na_lineas_registro', { method: 'POST', body: JSON.stringify(lineaRows.slice(i, i+200)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+              }
             }
           }
-        } catch(e) { console.error('[NorAcuaV3] persistencia registros:', e); }
+
+          lastSavedRegRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia registros:', e); }
       }, 1200);
     }
   }, [registros, loading]);
