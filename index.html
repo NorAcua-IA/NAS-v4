@@ -5287,7 +5287,7 @@ function App() {
     setFCl({ n: "", c: "" });
     alert(`Contraseña de ${mClave.nombre} actualizada.`);
   };
-  const guardarHist = (html, nom, tipo, proyNombre, periodo, importeTotal, proyectoId, regIds) => {
+  const guardarHist = (html, nom, tipo, proyNombre, periodo, importeTotal, proyectoId, regIds, clienteId, periodoDesde, periodoHasta) => {
     const entry = {
       id: uuid(),
       nom,
@@ -5310,6 +5310,9 @@ function App() {
     dbInformes.upsert({
       id: entry.id,
       nombre: nom || '',
+      cliente_id: clienteId || clientes?.[0]?.id || null,
+      periodo_desde: periodoDesde || new Date().toISOString().slice(0, 10),
+      periodo_hasta: periodoHasta || new Date().toISOString().slice(0, 10),
       proyecto_id: proyectoId || null,
       importe_total: importeTotal || null,
       estado: 'borrador',
@@ -5364,7 +5367,7 @@ function App() {
       concs,
       todosProyectos: proyectos
     });
-    guardarHist(html, nom, "periodo", proy ? proy.nombre : "Todos los proyectos", `${fmtD(fInf.desde)} → ${fmtD(fInf.hasta)}`, total, proy?.id || null, rs.map(r => r.id));
+    guardarHist(html, nom, "periodo", proy ? proy.nombre : "Todos los proyectos", `${fmtD(fInf.desde)} → ${fmtD(fInf.hasta)}`, total, proy?.id || null, rs.map(r => r.id), proy?.clienteId || null, fInf.desde, fInf.hasta);
     if (yaFacturadas > 0) {
       console.info(`[NorAcua] Informe generado — ${yaFacturadas} actividad(es) ya facturada(s) excluida(s) del período`);
     }
