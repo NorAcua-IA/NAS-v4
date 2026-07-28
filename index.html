@@ -309,6 +309,22 @@ function _rowToOferta(row) {
   };
 }
 
+const _OFERTA_ESTADO_REV_MAP = { 'Enviada': 'activa', 'Aceptada': 'cerrada', 'Rechazada': 'cancelada', 'Borrador': 'borrador', 'Facturada': 'facturada' };
+function _ofertaToRow(o) {
+  return {
+    id: o.id, codigo: o.numero || '', asunto: o.asunto || '',
+    estado: _OFERTA_ESTADO_REV_MAP[o.estado] || o.estado || 'borrador',
+    cliente_id: o.clienteId || null, po: o.po || null,
+    importe_total: o.importeTotal || null,
+    metadatos: { numero: o.numero||'', fecha: o.fecha||'', estacion: o.estacion||'', zona: o.zona||'', responsable: o.responsable||'', lineas: o.lineas||[], version: o.version||1, ref: o.ref||'', notas: o.notas||'' },
+    creado_en: o.creadoEn || new Date().toISOString()
+  };
+}
+// v4.0: clave de comparación para el guardado por diferencias de ofertas.
+function _ofertaDiffKey(o) {
+  return JSON.stringify(_ofertaToRow(o));
+}
+
 // Convierte fila v3 de na_hsse_supervisiones al formato interno React
 function _rowToHsse(row) {
   // Extended fields in datos_supervision — keys come from migrated data
@@ -3726,6 +3742,7 @@ function App() {
   // actividad, para que el guardado automático solo escriba lo que de verdad cambió
   // desde ESTA sesión, en vez de reescribir siempre la lista entera de memoria.
   const lastSavedRegRef = useRef(new Map());
+  const lastSavedOfertaRef = useRef(new Map());
   const [hashesReady, setHashesReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [usrs, setUsrs] = useState(Object.fromEntries(Object.entries(DEF_USERS).map(([k, v]) => [k, {
@@ -4208,7 +4225,13 @@ function App() {
         setProyectos(proyectosResolved);
 
         // 11. Ofertas
-        setOfertas((ofertaRows || []).map(_rowToOferta));
+        {
+          const ofertasV3 = (ofertaRows || []).map(_rowToOferta);
+          setOfertas(ofertasV3);
+          const seedOfertas = new Map();
+          ofertasV3.forEach(o => seedOfertas.set(o.id, _ofertaDiffKey(o)));
+          lastSavedOfertaRef.current = seedOfertas;
+        }
 
         // 12. cfgOfertas — leer contador de la serie principal desde na_series
         // En v3 el contador vive en na_series; aquí calculamos el nº de oferta actual
@@ -4519,19 +4542,21 @@ function App() {
       clearTimeout(window._bkOfer);
       window._bkOfer = setTimeout(async () => {
         try {
-          const estadoRevMap = { 'Enviada': 'activa', 'Aceptada': 'cerrada', 'Rechazada': 'cancelada', 'Borrador': 'borrador', 'Facturada': 'facturada' };
-          const rows = ofertas.map(o => ({
-            id: o.id, codigo: o.numero || '', asunto: o.asunto || '',
-            estado: estadoRevMap[o.estado] || o.estado || 'borrador',
-            cliente_id: o.clienteId || null, po: o.po || null,
-            importe_total: o.importeTotal || null,
-            metadatos: { numero: o.numero||'', fecha: o.fecha||'', estacion: o.estacion||'', zona: o.zona||'', responsable: o.responsable||'', lineas: o.lineas||[], version: o.version||1, ref: o.ref||'', notas: o.notas||'' },
-            creado_en: o.creadoEn || new Date().toISOString()
-          }));
-          for (let i = 0; i < rows.length; i += 100) {
-            await _sb('/rest/v1/na_ofertas', { method: 'POST', body: JSON.stringify(rows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+          const prevMap = lastSavedOfertaRef.current || new Map();
+          const nextMap = new Map();
+          const changedRows = [];
+          ofertas.forEach(o => {
+            const key = _ofertaDiffKey(o);
+            nextMap.set(o.id, key);
+            if (prevMap.get(o.id) !== key) changedRows.push(_ofertaToRow(o));
+          });
+          if (changedRows.length) {
+            for (let i = 0; i < changedRows.length; i += 100) {
+              await _sb('/rest/v1/na_ofertas', { method: 'POST', body: JSON.stringify(changedRows.slice(i, i+100)), headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+            }
           }
-        } catch(e) { console.error('[NorAcuaV3] persistencia ofertas:', e); }
+          lastSavedOfertaRef.current = nextMap;
+        } catch(e) { console.error('[NorAcuaV4] persistencia ofertas:', e); }
       }, 1000);
     }
   }, [ofertas, loading]);
