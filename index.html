@@ -279,6 +279,7 @@ function _factHeaderToRow(f) {
     estado: f.estado || 'Borrador', fecha: f.fecha,
     fecha_vto: f.fechaVto || null, cliente_id: f.clienteId || null,
     serie_id: f.serieId || null,
+    creado_por_id: f.creadoPorId || null,
     observaciones: f.concepto || '', po_ref: f.po || null,
     metodo_pago: f.metodoPago || 'Transferencia bancaria',
     creado_en: f.creadoEn || new Date().toISOString(),
@@ -389,6 +390,7 @@ function _ofertaToRow(o) {
     id: o.id, codigo: o.numero || '', asunto: o.asunto || '',
     estado: _OFERTA_ESTADO_REV_MAP[o.estado] || o.estado || 'borrador',
     cliente_id: o.clienteId || null, po: o.po || null,
+    creado_por_id: o.creadoPorId || null,
     importe_total: o.importeTotal || null,
     metadatos: { numero: o.numero||'', fecha: o.fecha||'', estacion: o.estacion||'', zona: o.zona||'', responsable: o.responsable||'', lineas: o.lineas||[], version: o.version||1, ref: o.ref||'', notas: o.notas||'' },
     creado_en: o.creadoEn || new Date().toISOString()
@@ -5533,7 +5535,7 @@ function App() {
       setSeries(incCont(series, editDoc.serieId, editDoc.tipo, editDoc.fecha));
       const { _regIds, _histId, ...cleanDoc } = editDoc;
       const newFactId = uuid();
-      const newFact = { ...cleanDoc, id: newFactId, creadoEn: new Date().toISOString() };
+      const newFact = { ...cleanDoc, id: newFactId, creadoPorId: cleanDoc.creadoPorId || user?.id || null, creadoEn: new Date().toISOString() };
       setFacturas(f => [newFact, ...f]);
       if (_regIds && _regIds.length > 0) {
         const factNum = editDoc.numero || "—";
@@ -5664,6 +5666,7 @@ function App() {
       setOfertas(prev => [{
         ...snapshot,
         id,
+        creadoPorId: snapshot.creadoPorId || user?.id || null,
         creadoEn: new Date().toISOString()
       }, ...(Array.isArray(prev) ? prev : [])]);
     } else {
