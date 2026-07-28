@@ -3803,6 +3803,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [buzon, setBuzon] = useState([]);
   const [showBuzon, setShowBuzon] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [lastLogin, setLastLogin] = useState(null);
   const [autoLogoutWarn, setAutoLogoutWarn] = useState(false);
   const _lastActivityRef = useRef(Date.now());
@@ -6378,17 +6379,25 @@ function App() {
     }
   }, novedades.length)), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      setFase("login");
-      setUser(null);
-      keyRef.current = null;
-      setConcs([]);
+      // v4.0: dar tiempo a que termine cualquier guardado pendiente (hasta 1,5s de
+      // espera) antes de cambiar de pantalla, para no perder cambios recientes.
+      setLoggingOut(true);
+      setTimeout(() => {
+        setFase("login");
+        setUser(null);
+        keyRef.current = null;
+        setConcs([]);
+      }, 2000);
     },
+    disabled: loggingOut,
+    title: loggingOut ? "Guardando cambios pendientes…" : "Cerrar sesión",
     style: {
       background: C.cardL,
       border: `1px solid ${C.border}`,
       borderRadius: 7,
       color: C.textSec,
-      cursor: "pointer",
+      cursor: loggingOut ? "wait" : "pointer",
+      opacity: loggingOut ? 0.5 : 1,
       padding: "6px 8px",
       display: "flex"
     }
